@@ -1,0 +1,1098 @@
+const cells = document.querySelectorAll('.cell');
+const statusDiv = document.getElementById('status');
+const resetBtn = document.getElementById('resetBtn');
+const winModal = document.getElementById('winModal');
+const winMessage = document.getElementById('winMessage');
+const modalResetBtn = document.getElementById('modalResetBtn');
+const modeBtns = document.querySelectorAll('.mode-btn');
+const diffBtns = document.querySelectorAll('.diff-btn');
+const difficultySelector = document.getElementById('difficultySelector');
+
+let board = Array(9).fill(null);
+let currentPlayer = 'black';
+let blackPieces = [];
+let whitePieces = [];
+let gameOver = false;
+let gameMode = 'pvp';
+let difficulty = 'medium';
+let aiThinking = false;
+
+const winPatterns = [
+    [0, 1, 2], [3, 4, 5], [6, 7, 8],
+    [0, 3, 6], [1, 4, 7], [2, 5, 8],
+    [0, 4, 8], [2, 4, 6]
+];
+
+const confettiColors = ['#ff0000', '#00ff00', '#0000ff', '#ffff00', '#ff00ff', '#00ffff', '#ff8800', '#8800ff'];
+
+// ── 音效系统 ──────────────────────────────────
+
+let audioCtx = null;
+let soundEnabled = true;
+const soundToggle = document.getElementById('soundToggle');
+
+function getAudioCtx() {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    return audioCtx;
+}
+
+function playTone(freq, duration, startTime, gainVal = 0.15, type = 'sine') {
+    const ctx = getAudioCtx();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = type;
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.frequency.setValueAtTime(freq, startTime);
+    gain.gain.setValueAtTime(gainVal, startTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, startTime + duration);
+    osc.start(startTime);
+    osc.stop(startTime + duration);
+}
+
+function playPlaceSound() {
+    if (!soundEnabled) return;
+    const t = getAudioCtx().currentTime;
+    playTone(600, 0.08, t, 0.2, 'sine');
+    playTone(400, 0.06, t + 0.03, 0.1, 'triangle');
+}
+
+function playWinSound() {
+    if (!soundEnabled) return;
+    const t = getAudioCtx().currentTime;
+    const notes = [523, 659, 784, 1047, 1319];
+    notes.forEach((freq, i) => {
+        playTone(freq, 0.3, t + i * 0.12, 0.12, 'sine');
+    });
+}
+
+function playLoseSound() {
+    if (!soundEnabled) return;
+    const t = getAudioCtx().currentTime;
+    const notes = [500, 420, 350, 280];
+    notes.forEach((freq, i) => {
+        playTone(freq, 0.25, t + i * 0.15, 0.1, 'triangle');
+    });
+}
+
+// ── 粒子系统 ──────────────────────────────────
+
+function createParticles(cellElement) {
+    const rect = cellElement.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    const colors = ['#f5e6b8', '#c8b4ff', '#ffd700', '#fff', '#e8c46a'];
+
+    for (let i = 0; i < 10; i++) {
+        const p = document.createElement('div');
+        p.className = 'particle';
+        const angle = (i / 10) * Math.PI * 2 + (Math.random() - 0.5) * 0.5;
+        const dist = 25 + Math.random() * 35;
+        p.style.setProperty('--px', Math.cos(angle) * dist + 'px');
+        p.style.setProperty('--py', Math.sin(angle) * dist + 'px');
+        p.style.background = colors[Math.floor(Math.random() * colors.length)];
+        p.style.left = cx + 'px';
+        p.style.top = cy + 'px';
+        p.style.width = (4 + Math.random() * 5) + 'px';
+        p.style.height = p.style.width;
+        document.body.appendChild(p);
+        setTimeout(() => p.remove(), 700);
+    }
+}
+
+// ── 月亮精灵 ──────────────────────────────────
+
+const moonChar = document.getElementById('moonChar');
+
+function showMoonChar(isWin) {
+    moonChar.textContent = isWin ? '🌝' : '🌚';
+    moonChar.className = 'moon-char show';
+    setTimeout(() => { moonChar.className = 'moon-char'; }, 2500);
+}
+
+function hideMoonChar() {
+    moonChar.className = 'moon-char';
+}
+
+// ── 工具函数 ──────────────────────────────────
+
+function checkWinState(boardState, player) {
+    return winPatterns.some(pattern =>
+        pattern.every(index => boardState[index] === player)
+    );
+}
+
+function checkWin(player) {
+    return checkWinState(board, player);
+}
+
+// ── 游戏初始化 ────────────────────────────────
+
+function initGame() {
+    board = Array(9).fill(null);
+    currentPlayer = 'black';
+    blackPieces = [];
+    whitePieces = [];
+    gameOver = false;
+    aiThinking = false;
+    statusDiv.textContent = '黑棋先行';
+    statusDiv.style.color = 'rgba(255,255,255,0.7)';
+    cells.forEach(cell => {
+        cell.innerHTML = '';
+        cell.classList.remove('occupied');
+    });
+    hideModal();
+}
+
+// ── UI 更新 ───────────────────────────────────
+
+function updateOldPieces(pieces) {
+    cells.forEach(cell => {
+        const piece = cell.querySelector('.piece');
+        if (piece) piece.classList.remove('old');
+    });
+
+    if (pieces.length >= 3) {
+        const oldestIndex = pieces[0];
+        const oldestCell = cells[oldestIndex];
+        const oldestPiece = oldestCell.querySelector('.piece');
+        if (oldestPiece) oldestPiece.classList.add('old');
+    }
+}
+
+function createConfetti() {
+    for (let i = 0; i < 100; i++) {
+        setTimeout(() => {
+            const confetti = document.createElement('div');
+            confetti.className = 'confetti';
+            confetti.style.left = Math.random() * 100 + 'vw';
+            confetti.style.backgroundColor = confettiColors[Math.floor(Math.random() * confettiColors.length)];
+            confetti.style.animationDelay = Math.random() * 0.5 + 's';
+            confetti.style.width = (Math.random() * 10 + 5) + 'px';
+            confetti.style.height = (Math.random() * 10 + 5) + 'px';
+            document.body.appendChild(confetti);
+            setTimeout(() => confetti.remove(), 3000);
+        }, i * 30);
+    }
+}
+
+function showModal(player) {
+    const isPlayerWin = (player === 'black' && gameMode === 'pve') ||
+                         (player === 'white' && gameMode === 'pve' && difficulty !== 'easy');
+    if (isPlayerWin) {
+        playLoseSound();
+        showMoonChar(false);
+    } else {
+        playWinSound();
+        showMoonChar(true);
+    }
+
+    winMessage.textContent = `${player === 'black' ? '黑棋' : '白棋'}获胜！`;
+    winModal.classList.add('show');
+    createConfetti();
+}
+
+function hideModal() {
+    winModal.classList.remove('show');
+}
+
+// ── 落子逻辑 ──────────────────────────────────
+
+function placePiece(index) {
+    if (board[index] !== null) return;
+
+    board[index] = currentPlayer;
+    const cell = cells[index];
+
+    // 音效 & 粒子
+    playPlaceSound();
+    createParticles(cell);
+
+    const piece = document.createElement('div');
+    piece.className = `piece ${currentPlayer}`;
+    cell.appendChild(piece);
+    cell.classList.add('occupied');
+
+    if (currentPlayer === 'black') {
+        blackPieces.push(index);
+        if (blackPieces.length > 3) {
+            const oldestIndex = blackPieces.shift();
+            board[oldestIndex] = null;
+            const oldestCell = cells[oldestIndex];
+            oldestCell.innerHTML = '';
+            oldestCell.classList.remove('occupied');
+        }
+        updateOldPieces(blackPieces);
+    } else {
+        whitePieces.push(index);
+        if (whitePieces.length > 3) {
+            const oldestIndex = whitePieces.shift();
+            board[oldestIndex] = null;
+            const oldestCell = cells[oldestIndex];
+            oldestCell.innerHTML = '';
+            oldestCell.classList.remove('occupied');
+        }
+        updateOldPieces(whitePieces);
+    }
+
+    if (checkWin(currentPlayer)) {
+        gameOver = true;
+        const name = currentPlayer === 'black' ? '黑棋' : '白棋';
+        statusDiv.textContent = `${name}获胜！`;
+        statusDiv.style.color = currentPlayer === 'black' ? 'rgba(255,255,255,0.7)' : 'rgba(255,255,255,0.7)';
+        setTimeout(() => showModal(currentPlayer), 500);
+        return;
+    }
+
+    currentPlayer = currentPlayer === 'black' ? 'white' : 'black';
+    const turnName = currentPlayer === 'black' ? '黑棋' : '白棋';
+    statusDiv.textContent = gameMode === 'pve' && currentPlayer === 'white'
+        ? 'AI 思考中...'
+        : `${turnName}回合`;
+
+    // AI 自动落子
+    if (gameMode === 'pve' && currentPlayer === 'white' && !gameOver) {
+        aiThinking = true;
+        setTimeout(aiMove, 500);
+    }
+}
+
+// ═══════════════════════════════════════════════
+// AI 核心 — 三档难度
+// ═══════════════════════════════════════════════
+
+const MINIMAX_MAX_DEPTH = 10;
+
+function aiMove() {
+    let move = null;
+
+    switch (difficulty) {
+        case 'easy':
+            move = getRandomMove();
+            break;
+        case 'medium':
+            move = getMediumMove();
+            break;
+        case 'hard':
+            move = getHardMove();
+            break;
+    }
+
+    if (move !== null && !gameOver) {
+        placePiece(move);
+    }
+    aiThinking = false;
+}
+
+// ── 简单：纯随机 ─────────────────────────────
+
+function getRandomMove() {
+    const empty = [];
+    for (let i = 0; i < 9; i++) {
+        if (board[i] === null) empty.push(i);
+    }
+    if (empty.length === 0) return null;
+    return empty[Math.floor(Math.random() * empty.length)];
+}
+
+// ── 中等：必胜/必堵 + 浅层搜索 ──────────────
+
+function getMediumMove() {
+    // 1. 能赢就赢
+    for (let i = 0; i < 9; i++) {
+        if (board[i] !== null) continue;
+        const simBoard = [...board];
+        const simWhite = [...whitePieces];
+        simBoard[i] = 'white';
+        simWhite.push(i);
+        if (simWhite.length > 3) {
+            const removed = simWhite.shift();
+            simBoard[removed] = null;
+        }
+        if (checkWinState(simBoard, 'white')) return i;
+    }
+
+    // 2. 对方能赢就堵
+    for (let i = 0; i < 9; i++) {
+        if (board[i] !== null) continue;
+        const simBoard = [...board];
+        const simBlack = [...blackPieces];
+        simBoard[i] = 'black';
+        simBlack.push(i);
+        if (simBlack.length > 3) {
+            const removed = simBlack.shift();
+            simBoard[removed] = null;
+        }
+        if (checkWinState(simBoard, 'black')) return i;
+    }
+
+    // 3. 否则用浅层 minimax depth=4 评估选最优
+    return getBestMoveByMinimax(4);
+}
+
+// ── 困难：完全 minimax depth=10 ──────────────
+
+function getHardMove() {
+    return getBestMoveByMinimax(10);
+}
+
+// ── 通用：用 minimax 评估选最优落子 ──────────
+
+function getBestMoveByMinimax(maxDepth) {
+    let bestScore = -Infinity;
+    let bestMove = null;
+
+    for (let i = 0; i < 9; i++) {
+        if (board[i] !== null) continue;
+
+        const simBoard = [...board];
+        const simWhite = [...whitePieces];
+        simBoard[i] = 'white';
+        simWhite.push(i);
+        if (simWhite.length > 3) {
+            const removed = simWhite.shift();
+            simBoard[removed] = null;
+        }
+
+        const score = minimax(simBoard, [...blackPieces], simWhite, 0, false, -Infinity, Infinity, maxDepth);
+        if (score > bestScore) {
+            bestScore = score;
+            bestMove = i;
+        }
+    }
+
+    return bestMove;
+}
+
+function minimax(boardState, blackOrder, whiteOrder, depth, isMaximizing, alpha, beta, maxDepth) {
+    // 终局判定
+    if (checkWinState(boardState, 'white')) return 1000 - depth;
+    if (checkWinState(boardState, 'black')) return depth - 1000;
+
+    // 到达搜索深度上限 → 用启发式打分
+    if (depth >= maxDepth) {
+        return evaluate(boardState);
+    }
+
+    // 收集可落子位置
+    const moves = [];
+    for (let i = 0; i < 9; i++) {
+        if (boardState[i] === null) moves.push(i);
+    }
+    if (moves.length === 0) return 0;
+
+    if (isMaximizing) {
+        // AI（白棋）回合 — 最大化分数
+        let maxScore = -Infinity;
+        for (const i of moves) {
+            const newBoard = [...boardState];
+            const newWhite = [...whiteOrder];
+            newBoard[i] = 'white';
+            newWhite.push(i);
+            if (newWhite.length > 3) {
+                const removed = newWhite.shift();
+                newBoard[removed] = null;
+            }
+            const score = minimax(newBoard, blackOrder, newWhite, depth + 1, false, alpha, beta, maxDepth);
+            maxScore = Math.max(score, maxScore);
+            alpha = Math.max(alpha, score);
+            if (beta <= alpha) break;
+        }
+        return maxScore;
+    } else {
+        // 人类（黑棋）回合 — 最小化分数
+        let minScore = Infinity;
+        for (const i of moves) {
+            const newBoard = [...boardState];
+            const newBlack = [...blackOrder];
+            newBoard[i] = 'black';
+            newBlack.push(i);
+            if (newBlack.length > 3) {
+                const removed = newBlack.shift();
+                newBoard[removed] = null;
+            }
+            const score = minimax(newBoard, newBlack, whiteOrder, depth + 1, true, alpha, beta, maxDepth);
+            minScore = Math.min(score, minScore);
+            beta = Math.min(beta, score);
+            if (beta <= alpha) break;
+        }
+        return minScore;
+    }
+}
+
+function evaluate(boardState) {
+    let score = 0;
+
+    for (const pattern of winPatterns) {
+        let whiteCount = 0;
+        let blackCount = 0;
+        for (const idx of pattern) {
+            if (boardState[idx] === 'white') whiteCount++;
+            else if (boardState[idx] === 'black') blackCount++;
+        }
+
+        // 威胁程度
+        if (whiteCount === 2 && blackCount === 0) score += 15;
+        if (blackCount === 2 && whiteCount === 0) score -= 15;
+        if (whiteCount === 1 && blackCount === 0) score += 2;
+        if (blackCount === 1 && whiteCount === 0) score -= 2;
+    }
+
+    // 中心控制
+    if (boardState[4] === 'white') score += 5;
+    else if (boardState[4] === 'black') score -= 5;
+
+    // 角落控制
+    const corners = [0, 2, 6, 8];
+    for (const c of corners) {
+        if (boardState[c] === 'white') score += 2;
+        else if (boardState[c] === 'black') score -= 2;
+    }
+
+    return score;
+}
+
+// ── 事件绑定 ──────────────────────────────────
+
+let audioInitialized = false;
+
+cells.forEach(cell => {
+    cell.addEventListener('click', () => {
+        // 首次交互初始化音频
+        if (!audioInitialized) { getAudioCtx(); audioInitialized = true; }
+        const index = parseInt(cell.dataset.index);
+        if (gameOver || board[index] !== null || aiThinking) return;
+        placePiece(index);
+    });
+});
+
+resetBtn.addEventListener('click', initGame);
+modalResetBtn.addEventListener('click', initGame);
+
+// 音效开关
+soundToggle.addEventListener('click', () => {
+    soundEnabled = !soundEnabled;
+    soundToggle.textContent = soundEnabled ? '🔊' : '🔇';
+});
+
+// 模式切换
+modeBtns.forEach(btn => {
+    btn.addEventListener('click', () => {
+        modeBtns.forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        gameMode = btn.dataset.mode;
+
+        // PvE 时显示难度选择器，PvP 时隐藏
+        difficultySelector.style.display = gameMode === 'pve' ? 'flex' : 'none';
+
+        initGame();
+    });
+});
+
+// 难度切换
+diffBtns.forEach(btn => {
+    btn.addEventListener('click', () => {
+        diffBtns.forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        difficulty = btn.dataset.diff;
+        initGame();
+    });
+});
+
+initGame();
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>月亮棋</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="moon-deco"></div>
+    <div class="container">
+        <h1>月亮棋</h1>
+        <div class="mode-selector">
+            <button class="mode-btn active" data-mode="pvp">👥 双人对战</button>
+            <button class="mode-btn" data-mode="pve">🤖 人机对战</button>
+        </div>
+        <div class="difficulty-selector" id="difficultySelector" style="display:none">
+            <button class="diff-btn" data-diff="easy">🌙 简单</button>
+            <button class="diff-btn active" data-diff="medium">🌓 中等</button>
+            <button class="diff-btn" data-diff="hard">🌕 困难</button>
+        </div>
+        <div class="status" id="status">黑棋先行</div>
+        <div class="board" id="board">
+            <div class="cell" data-index="0"></div>
+            <div class="cell" data-index="1"></div>
+            <div class="cell" data-index="2"></div>
+            <div class="cell" data-index="3"></div>
+            <div class="cell" data-index="4"></div>
+            <div class="cell" data-index="5"></div>
+            <div class="cell" data-index="6"></div>
+            <div class="cell" data-index="7"></div>
+            <div class="cell" data-index="8"></div>
+        </div>
+        <button class="reset-btn" id="resetBtn">重新开始</button>
+    </div>
+    
+    <div class="modal" id="winModal">
+        <div class="modal-content">
+            <h2 id="winMessage">黑棋获胜！</h2>
+            <button class="reset-btn" id="modalResetBtn">再来一局</button>
+        </div>
+    </div>
+    
+    <div class="moon-char" id="moonChar">🌙</div>
+    <button class="sound-toggle" id="soundToggle" title="音效开关">🔊</button>
+
+    <script src="game.js"></script>
+</body>
+</html>
+/* ═══════════════════════════════════════════
+   月亮棋 — 月夜主题
+   ═══════════════════════════════════════════ */
+
+/* ── 基础重置 ────────────────────────────── */
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+/* ── 夜空背景 ────────────────────────────── */
+
+body {
+    font-family: 'Microsoft YaHei', 'PingFang SC', sans-serif;
+    min-height: 100vh;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    background: linear-gradient(145deg, #0b0e2a 0%, #1a1040 40%, #1f0f3a 70%, #0d1025 100%);
+    overflow: hidden;
+    position: relative;
+}
+
+/* ── 星星（CSS box-shadow 生成 ~100 颗） ─── */
+
+body::before {
+    content: '';
+    position: fixed;
+    width: 2px;
+    height: 2px;
+    top: 0;
+    left: 0;
+    border-radius: 50%;
+    background: transparent;
+    box-shadow:
+        /* 大星（亮） */
+        120px  80px 2px rgba(255,255,240,0.9),
+        340px 180px 2px rgba(255,255,240,0.8),
+        550px  60px 2px rgba(255,255,240,0.9),
+        780px 220px 2px rgba(255,255,240,0.7),
+        950px 130px 2px rgba(255,255,240,0.8),
+        /* 中星 */
+         50px 300px 1.5px rgba(255,255,240,0.6),
+        200px 450px 1.5px rgba(255,255,240,0.5),
+        400px 380px 1.5px rgba(255,255,240,0.7),
+        600px 500px 1.5px rgba(255,255,240,0.5),
+        850px 420px 1.5px rgba(255,255,240,0.6),
+        /* 小星群 */
+         30px 150px 1px rgba(255,255,240,0.3),
+        100px 550px 1px rgba(255,255,240,0.4),
+        180px 220px 1px rgba(255,255,240,0.3),
+        260px 100px 1px rgba(255,255,240,0.5),
+        320px 630px 1px rgba(255,255,240,0.3),
+        450px 280px 1px rgba(255,255,240,0.4),
+        520px 480px 1px rgba(255,255,240,0.3),
+        620px 150px 1px rgba(255,255,240,0.5),
+        700px 580px 1px rgba(255,255,240,0.3),
+        820px 320px 1px rgba(255,255,240,0.4),
+        900px  50px 1px rgba(255,255,240,0.3),
+        980px 520px 1px rgba(255,255,240,0.4),
+        110px 680px 1px rgba(255,255,240,0.3),
+        680px  90px 1px rgba(255,255,240,0.4),
+        380px 700px 1px rgba(255,255,240,0.3),
+        750px 650px 1px rgba(255,255,240,0.3),
+        880px 700px 1px rgba(255,255,240,0.4),
+        480px  40px 1px rgba(255,255,240,0.3),
+        40px  420px 1px rgba(255,255,240,0.3),
+        930px 280px 1px rgba(255,255,240,0.3);
+    animation: twinkle 4s ease-in-out infinite alternate;
+}
+
+body::after {
+    content: '';
+    position: fixed;
+    width: 1.5px;
+    height: 1.5px;
+    top: 0;
+    left: 0;
+    border-radius: 50%;
+    background: transparent;
+    box-shadow:
+        160px  40px 1px rgba(200,210,255,0.5),
+        420px 520px 1px rgba(200,210,255,0.4),
+        650px 350px 1px rgba(200,210,255,0.5),
+        300px 260px 1px rgba(200,210,255,0.3),
+        730px 480px 1px rgba(200,210,255,0.4),
+        870px 600px 1px rgba(200,210,255,0.3),
+        500px 160px 1px rgba(200,210,255,0.4),
+        150px 600px 1px rgba(200,210,255,0.3),
+        590px 650px 1px rgba(200,210,255,0.4),
+        250px  50px 1px rgba(200,210,255,0.3);
+    animation: twinkle 5s ease-in-out infinite alternate-reverse;
+}
+
+@keyframes twinkle {
+    0%   { opacity: 0.3; }
+    50%  { opacity: 0.9; }
+    100% { opacity: 0.4; }
+}
+
+/* ── 月亮装饰 ────────────────────────────── */
+
+.moon-deco {
+    position: fixed;
+    top: 5%;
+    right: 8%;
+    width: 90px;
+    height: 90px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 40% 40%, #ffefd6, #f5d98a 60%, #e8c46a);
+    box-shadow:
+        0 0 40px rgba(245, 217, 138, 0.3),
+        0 0 80px rgba(245, 217, 138, 0.15),
+        0 0 120px rgba(245, 217, 138, 0.08),
+        inset -15px -10px 20px rgba(180, 150, 80, 0.3);
+    pointer-events: none;
+    z-index: 0;
+}
+
+.moon-deco::before {
+    content: '';
+    position: absolute;
+    top: 18px;
+    left: 22px;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(180,150,80,0.2), transparent);
+}
+
+.moon-deco::after {
+    content: '';
+    position: absolute;
+    bottom: 20px;
+    right: 18px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(180,150,80,0.15), transparent);
+}
+
+/* ── 主容器（毛玻璃） ────────────────────── */
+
+.container {
+    position: relative;
+    z-index: 1;
+    text-align: center;
+    background: rgba(255, 255, 255, 0.06);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    border-radius: 28px;
+    padding: 35px 45px;
+    box-shadow:
+        0 20px 60px rgba(0, 0, 0, 0.5),
+        inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+/* ── 标题 ────────────────────────────────── */
+
+h1 {
+    font-size: 2.3em;
+    font-weight: 700;
+    margin-bottom: 18px;
+    background: linear-gradient(135deg, #f5e6b8 0%, #e8c46a 50%, #f5e6b8 100%);
+    background-clip: text;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    text-shadow: none;
+    filter: drop-shadow(0 0 20px rgba(245, 217, 138, 0.2));
+    letter-spacing: 2px;
+}
+
+/* ── 模式选择器 ──────────────────────────── */
+
+.mode-selector {
+    display: flex;
+    justify-content: center;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+
+.mode-btn {
+    padding: 7px 18px;
+    font-size: 0.85em;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    background: rgba(255, 255, 255, 0.04);
+    color: rgba(255, 255, 255, 0.5);
+    border-radius: 16px;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    font-family: inherit;
+}
+
+.mode-btn:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: rgba(255, 255, 255, 0.7);
+}
+
+.mode-btn.active {
+    background: rgba(255, 255, 255, 0.10);
+    color: #f5e6b8;
+    border-color: rgba(245, 217, 138, 0.3);
+    box-shadow: 0 0 16px rgba(245, 217, 138, 0.08);
+}
+
+/* ── 难度选择器 ──────────────────────────── */
+
+.difficulty-selector {
+    display: flex;
+    justify-content: center;
+    gap: 6px;
+    margin-bottom: 16px;
+}
+
+.diff-btn {
+    padding: 5px 14px;
+    font-size: 0.8em;
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    background: rgba(255, 255, 255, 0.03);
+    color: rgba(255, 255, 255, 0.4);
+    border-radius: 12px;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    font-family: inherit;
+}
+
+.diff-btn:hover {
+    background: rgba(255, 255, 255, 0.06);
+    color: rgba(255, 255, 255, 0.6);
+}
+
+.diff-btn.active {
+    background: rgba(200, 180, 255, 0.10);
+    color: #c8b4ff;
+    border-color: rgba(200, 180, 255, 0.25);
+    box-shadow: 0 0 12px rgba(200, 180, 255, 0.06);
+}
+
+/* ── 状态栏 ──────────────────────────────── */
+
+.status {
+    font-size: 1.2em;
+    margin-bottom: 24px;
+    color: rgba(255, 255, 255, 0.7);
+    font-weight: 500;
+    text-shadow: 0 0 20px rgba(255, 255, 255, 0.05);
+    letter-spacing: 1px;
+}
+
+/* ── 棋盘 ────────────────────────────────── */
+
+.board {
+    display: grid;
+    grid-template-columns: repeat(3, 100px);
+    grid-template-rows: repeat(3, 100px);
+    gap: 10px;
+    margin: 0 auto 28px;
+    animation: boardEntrance 0.6s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+.cell {
+    background: rgba(255, 255, 255, 0.04);
+    border-radius: 14px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    cursor: pointer;
+    transition: all 0.25s ease;
+    position: relative;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.cell:hover:not(.occupied) {
+    background: rgba(255, 255, 255, 0.08);
+    border-color: rgba(245, 217, 138, 0.15);
+    box-shadow: 0 0 20px rgba(245, 217, 138, 0.06), inset 0 0 20px rgba(245, 217, 138, 0.03);
+    transform: scale(1.03);
+}
+
+.cell.occupied {
+    cursor: not-allowed;
+}
+
+/* ── 棋子 ────────────────────────────────── */
+
+.cell .piece {
+    width: 68px;
+    height: 68px;
+    border-radius: 50%;
+    position: absolute;
+    animation: pieceDrop 0.35s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+@keyframes pieceDrop {
+    0% {
+        transform: translateY(-40px) scale(0.4);
+        opacity: 0;
+    }
+    60% {
+        transform: translateY(4px) scale(1.05);
+        opacity: 1;
+    }
+    100% {
+        transform: translateY(0) scale(1);
+        opacity: 1;
+    }
+}
+
+/* 黑棋 — 月面风格 */
+.cell .piece.black {
+    background: radial-gradient(circle at 35% 30%, #555 0%, #2a2a2a 40%, #111 80%, #000 100%);
+    box-shadow:
+        0 4px 12px rgba(0, 0, 0, 0.6),
+        inset 0 -3px 6px rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+/* 黑棋月坑纹理 */
+.cell .piece.black::before {
+    content: '';
+    position: absolute;
+    top: 14px;
+    left: 16px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(100,100,100,0.15), transparent 70%);
+}
+
+.cell .piece.black::after {
+    content: '';
+    position: absolute;
+    bottom: 16px;
+    right: 12px;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(100,100,100,0.1), transparent 70%);
+}
+
+/* 白棋 — 月亮光晕 */
+.cell .piece.white {
+    background: radial-gradient(circle at 35% 30%, #fff 0%, #f0ebf5 40%, #e0d5f0 70%, #d0c0e8 100%);
+    box-shadow:
+        0 4px 16px rgba(200, 180, 255, 0.15),
+        0 0 20px rgba(200, 180, 255, 0.08),
+        inset 0 -3px 6px rgba(0, 0, 0, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.25);
+}
+
+.cell .piece.old {
+    opacity: 0.35;
+    transform: scale(0.82);
+    filter: saturate(0.5);
+    animation: none;
+}
+
+/* ── 按钮 ────────────────────────────────── */
+
+.reset-btn {
+    padding: 12px 36px;
+    font-size: 1em;
+    background: linear-gradient(135deg, rgba(245, 217, 138, 0.12), rgba(200, 180, 255, 0.12));
+    color: rgba(255, 255, 255, 0.75);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 24px;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    font-family: inherit;
+    letter-spacing: 1px;
+}
+
+.reset-btn:hover {
+    background: linear-gradient(135deg, rgba(245, 217, 138, 0.18), rgba(200, 180, 255, 0.18));
+    border-color: rgba(255, 255, 255, 0.20);
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3), 0 0 20px rgba(245, 217, 138, 0.05);
+    transform: translateY(-1px);
+}
+
+.reset-btn:active {
+    transform: translateY(0);
+}
+
+/* ── 获胜弹窗 ────────────────────────────── */
+
+.modal {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.65);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    display: none;
+    justify-content: center;
+    align-items: center;
+    z-index: 1000;
+}
+
+.modal.show {
+    display: flex;
+    animation: modalFadeIn 0.3s ease;
+}
+
+@keyframes modalFadeIn {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+}
+
+.modal-content {
+    background: linear-gradient(145deg, rgba(20, 15, 45, 0.95), rgba(10, 10, 30, 0.95));
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    padding: 50px 60px;
+    border-radius: 24px;
+    text-align: center;
+    animation: modalPop 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
+    backdrop-filter: blur(12px);
+    box-shadow: 0 30px 80px rgba(0, 0, 0, 0.6);
+}
+
+@keyframes modalPop {
+    0%   { transform: scale(0.5); opacity: 0; }
+    100% { transform: scale(1); opacity: 1; }
+}
+
+.modal-content h2 {
+    font-size: 2.8em;
+    margin-bottom: 24px;
+    font-weight: 700;
+    background: linear-gradient(135deg, #f5e6b8, #e8c46a);
+    background-clip: text;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    filter: drop-shadow(0 0 20px rgba(245, 217, 138, 0.2));
+}
+
+/* ── 彩带 ────────────────────────────────── */
+
+.confetti {
+    position: fixed;
+    width: 10px;
+    height: 10px;
+    pointer-events: none;
+    animation: confettiFall 3s ease-out forwards;
+    z-index: 1001;
+}
+
+@keyframes confettiFall {
+    0% {
+        transform: translateY(-100vh) rotate(0deg) scale(1);
+        opacity: 1;
+    }
+    100% {
+        transform: translateY(100vh) rotate(720deg) scale(0.5);
+        opacity: 0;
+    }
+}
+
+@keyframes boardEntrance {
+    0%   { transform: scale(0.6) rotateX(15deg); opacity: 0; }
+    100% { transform: scale(1) rotateX(0); opacity: 1; }
+}
+
+/* ── 落子粒子 ──────────────────────────────── */
+
+.particle {
+    position: fixed;
+    border-radius: 50%;
+    pointer-events: none;
+    z-index: 999;
+    animation: particleBurst 0.65s ease-out forwards;
+}
+
+@keyframes particleBurst {
+    0% {
+        transform: translate(0, 0) scale(1);
+        opacity: 1;
+    }
+    100% {
+        transform: translate(var(--px), var(--py)) scale(0);
+        opacity: 0;
+    }
+}
+
+/* ── 月亮精灵 ──────────────────────────────── */
+
+.moon-char {
+    position: fixed;
+    bottom: -80px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 64px;
+    z-index: 999;
+    pointer-events: none;
+    transition: bottom 0.6s cubic-bezier(0.34, 1.56, 0.64, 1);
+    filter: drop-shadow(0 0 20px rgba(245, 217, 138, 0.3));
+}
+
+.moon-char.show {
+    bottom: 30px;
+    animation: moonDance 1.5s ease-in-out 0.3s infinite;
+}
+
+@keyframes moonDance {
+    0%, 100% { transform: translateX(-50%) rotate(0deg); }
+    25%      { transform: translateX(-40%) rotate(-8deg) scale(1.05); }
+    75%      { transform: translateX(-60%) rotate(8deg) scale(1.05); }
+}
+
+/* ── 音效开关 ──────────────────────────────── */
+
+.sound-toggle {
+    position: fixed;
+    top: 16px;
+    left: 16px;
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: rgba(255, 255, 255, 0.04);
+    backdrop-filter: blur(8px);
+    font-size: 18px;
+    cursor: pointer;
+    z-index: 100;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.3s ease;
+    padding: 0;
+    line-height: 1;
+}
+
+.sound-toggle:hover {
+    background: rgba(255, 255, 255, 0.10);
+    border-color: rgba(255, 255, 255, 0.20);
+    transform: scale(1.1);
+}
+
+{
+  "version": 2,
+  "public": true
+}
